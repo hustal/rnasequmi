@@ -56,10 +56,11 @@ if (params.help) {
  */
 
 // Check if genome exists in the config file
+/*
 if (params.genomes && params.genome && !params.genomes.containsKey(params.genome)) {
     exit 1, "The provided genome '${params.genome}' is not available in the iGenomes file. Currently the available genomes are ${params.genomes.keySet().join(", ")}"
 }
-
+*/ //--hustal
 // TODO nf-core: Add any reference files that are needed
 // Configurable reference genomes
 //
@@ -68,11 +69,13 @@ if (params.genomes && params.genome && !params.genomes.containsKey(params.genome
 //   input:
 //   file fasta from ch_fasta
 //
+
 params.fasta = params.genome ? params.genomes[ params.genome ].fasta ?: false : false
 if (params.fasta) { ch_fasta = file(params.fasta, checkIfExists: true) }
-
+ //--hustal
 // Has the run name been specified by the user?
 //  this has the bonus effect of catching both -name and --name
+
 custom_runName = params.name
 if (!(workflow.runName ==~ /[a-z]+_[a-z]+/)) {
   custom_runName = workflow.runName
@@ -87,6 +90,7 @@ if ( workflow.profile == 'awsbatch') {
   // Prevent trace files to be stored on S3 since S3 does not support rolling files.
   if (workflow.tracedir.startsWith('s3:')) exit 1, "Specify a local tracedir or run without trace! S3 cannot be used for tracefiles."
 }
+ //---hustal
 
 // Stage config files
 ch_multiqc_config = file(params.multiqc_config, checkIfExists: true)
@@ -95,28 +99,19 @@ ch_output_docs = file("$baseDir/docs/output.md", checkIfExists: true)
 /*
  * Create a channel for input read files
  */
-if (params.readPaths) {
-    if (params.singleEnd) {
-        Channel
-            .from(params.readPaths)
-            .map { row -> [ row[0], [ file(row[1][0], checkIfExists: true) ] ] }
-            .ifEmpty { exit 1, "params.readPaths was empty - no input files supplied" }
-            .into { read_files_fastqc; read_files_trimming }
-    } else {
-        Channel
-            .from(params.readPaths)
-            .map { row -> [ row[0], [ file(row[1][0], checkIfExists: true), file(row[1][1], checkIfExists: true) ] ] }
-            .ifEmpty { exit 1, "params.readPaths was empty - no input files supplied" }
-            .into { read_files_fastqc; read_files_trimming }
-    }
-} else {
-    Channel
-        .fromFilePairs( params.reads, size: params.singleEnd ? 1 : 2 )
-        .ifEmpty { exit 1, "Cannot find any reads matching: ${params.reads}\nNB: Path needs to be enclosed in quotes!\nIf this is single-end data, please specify --singleEnd on the command line." }
-        .into { read_files_fastqc; read_files_trimming }
-}
+  Channel
+        .fromFilePairs( params.reads )
+        .ifEmpty { exit 1, "Cannot find any reads matching: ${params.reads}\nNB: Path needs to be enclosed in quotes!" }
+        .set { samples_set }
+/*
+Channel
+    .fromFilePairs('${params.reads}/Input_Files/*.{bam,fastq}')
+    .set { samples_set }
+*/
+
 
 // Header log info
+
 log.info nfcoreHeader()
 def summary = [:]
 if (workflow.revision) summary['Pipeline Release'] = workflow.revision
@@ -171,6 +166,7 @@ ${summary.collect { k,v -> "            <dt>$k</dt><dd><samp>${v ?: '<span style
 /*
  * Parse software version numbers
  */
+/*
 process get_software_versions {
     publishDir "${params.outdir}/pipeline_info", mode: 'copy',
         saveAs: { filename ->
@@ -194,74 +190,94 @@ process get_software_versions {
 }
 
 /*
- * STEP 1 - FastQC
+ * STEP 1 - Annotate_BAM_with_UMIs
  */
-process fastqc {
-    tag "$name"
-    label 'process_medium'
-    publishDir "${params.outdir}/fastqc", mode: 'copy',
-        saveAs: { filename -> filename.indexOf(".zip") > 0 ? "zips/$filename" : "$filename" }
 
-    input:
-    set val(name), file(reads) from read_files_fastqc
+//         java -jar fgbio-1.1.0.jar AnnotateBamWithUmis -i ${sampleID}.bam -f ${sampleID}.fastq -o ${sampleID}_umi.bam
 
-    output:
-    file "*_fastqc.{zip,html}" into fastqc_results
+ process Annotate_BAM_with_UMIs {
 
-    script:
-    """
-    fastqc --quiet --threads $task.cpus $reads
-    """
-}
+         publishDir "${params.outdir}/Output_Files", mode: 'copy'
+
+         input:
+         set sampleID, file(bam), file(fastq) from samples_set
+
+         output:
+         set sampleID, file ("${sampleID}_umi.bam") into umi_bam_files
+         file "*"
+
+         script:
+
+         """
+
+         fgbio AnnotateBamWithUmis -i ${sampleID}.bam -f ${sampleID}.fastq -o ${sampleID}_umi.bam
+
+         """
+
+ }
+
 
 /*
- * STEP 2 - MultiQC
+ * STEP 2 - Add @RG header
  */
-process multiqc {
-    publishDir "${params.outdir}/MultiQC", mode: 'copy'
 
-    input:
-    file multiqc_config from ch_multiqc_config
-    // TODO nf-core: Add in log files from your new processes for MultiQC to find!
-    file ('fastqc/*') from fastqc_results.collect().ifEmpty([])
-    file ('software_versions/*') from software_versions_yaml.collect()
-    file workflow_summary from create_workflow_summary(summary)
+ process Check_Header {
 
-    output:
-    file "*multiqc_report.html" into multiqc_report
-    file "*_data"
-    file "multiqc_plots"
+         publishDir "${params.outdir}/Output_Files", mode: 'copy'
 
-    script:
-    rtitle = custom_runName ? "--title \"$custom_runName\"" : ''
-    rfilename = custom_runName ? "--filename " + custom_runName.replaceAll('\\W','_').replaceAll('_+','_') + "_multiqc_report" : ''
-    // TODO nf-core: Specify which MultiQC modules to use with -m for a faster run time
-    """
-    multiqc -f $rtitle $rfilename --config $multiqc_config .
-    """
-}
+         input:
+
+         set sampleID, file (bam_files_with_RG) from  umi_bam_files
+
+         output:
+
+         set sampleID, file("${sampleID}_umi_RG.bam") into umi_RG_bam_files
+         file "*"
+
+         script:
+
+         """
+
+         samtools addreplacerg -r "@RG\tID:NGI-umi-project\tSM:hs" -o ${sampleID}_umi_RG.bam $bam_files_with_RG
+
+         """
+
+ }
+
 
 /*
  * STEP 3 - Output Description HTML
  */
-process output_documentation {
-    publishDir "${params.outdir}/pipeline_info", mode: 'copy'
 
-    input:
-    file output_docs from ch_output_docs
+ process Mark_Duplicates_with_UMIs {
 
-    output:
-    file "results_description.html"
+         publishDir "${params.outdir}/Output_Files", mode: 'copy'
 
-    script:
-    """
-    markdown_to_html.r $output_docs results_description.html
-    """
-}
+         input:
+
+         set sampleID, file (bam_files) from umi_RG_bam_files
+
+         output:
+
+         file "*"
+
+
+         script:
+
+         """
+
+         picard MarkDuplicates INPUT=$bam_files OUTPUT=${sampleID}_mark_dup.bam METRICS_FILE=${sampleID}_mark_dups_metrics.txt USE_JDK_DEFLATER=true USE_JDK_INFLATER=true BARCODE_TAG=RX ASSUME_SORTED=true TAG_DUPLICATE_SET_MEMBERS=true
+
+         """
+
+
+ }
+
 
 /*
  * Completion e-mail notification
  */
+
 workflow.onComplete {
 
     // Set up the e-mail variables
