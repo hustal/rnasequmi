@@ -246,7 +246,7 @@ process get_software_versions {
 
 
 /*
- * STEP 3 - Output Description HTML
+ * STEP 3 - Mark Duplicates based on UMI
  */
 
  process Mark_Duplicates_with_UMIs {
