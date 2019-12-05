@@ -11,3 +11,7 @@ dependencies:
   - bioconda::multiqc=1.7
   - conda-forge::r-markdown=1.1
   - conda-forge::r-base=3.6.1
+
+  - samtools=1.9
+  - picard=2.21.4
+  - fgbio=1.1.0
