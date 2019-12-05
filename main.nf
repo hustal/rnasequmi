@@ -192,9 +192,7 @@ process get_software_versions {
 /*
  * STEP 1 - Annotate_BAM_with_UMIs
  */
-
-//         java -jar fgbio-1.1.0.jar AnnotateBamWithUmis -i ${sampleID}.bam -f ${sampleID}.fastq -o ${sampleID}_umi.bam
-
+ 
  process Annotate_BAM_with_UMIs {
 
          publishDir "${params.outdir}/Output_Files", mode: 'copy'
